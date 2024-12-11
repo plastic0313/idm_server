@@ -30,6 +30,7 @@ def resize_img(input_image, max_side=1280, min_side=1024, size=None,
     input_image = input_image.resize([w_resize_new, h_resize_new], mode)
 
     if pad_to_max_side:
+
         res = np.ones([max_side, max_side, 3], dtype=np.uint8) * 255
         offset_x = (max_side - w_resize_new) // 2
         offset_y = (max_side - h_resize_new) // 2
@@ -101,11 +102,11 @@ if __name__ == '__main__':
     input_image_path = 'examples/hf_test/test_input.png'
     target_image_path = 'examples/hf_test/test_person_4.jpg'
 
-    app = FaceAnalysis(name='antelopev2', root='/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/FaceAnysis', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    app = FaceAnalysis(name='antelopev2', root='/home/project/idm_server/models/FaceAnysis', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
     app.prepare(ctx_id=0, det_size=(640, 640))
 
     # Path to InstantID models
-    checkpoint_dir = '/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/InstantID'
+    checkpoint_dir = '/home/project/idm_server/models/InstantID'
     face_adapter = f'{checkpoint_dir}/ip-adapter.bin'
     controlnet_path = f'{checkpoint_dir}/ControlNetModel'
 
@@ -113,10 +114,10 @@ if __name__ == '__main__':
     controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float16)
 
     # LCM Lora path ( https://huggingface.co/latent-consistency/lcm-lora-sdxl )
-    lora = f'/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/lcm-lora-sdxl/pytorch_lora_weights.safetensors'
+    # lora = f'/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/lcm-lora-sdxl/pytorch_lora_weights.safetensors'
 
     # You can use any base XL model (do not use models for inpainting!)
-    base_model_path = '/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/RealVisXL_V3.0'
+    base_model_path = '/home/project/idm_server/models/RealVisXL_V3.0'
 
     pipe = StableDiffusionXLInstantIDInpaintPipeline.from_pretrained(
         base_model_path,
@@ -131,6 +132,11 @@ if __name__ == '__main__':
     pipe.load_ip_adapter_instantid(face_adapter)
     # pipe.load_lora_weights(lora)
     # pipe.fuse_lora()
+
+    pipe.enable_vae_slicing()
+    pipe.enable_vae_tiling()
+
+    pipe.enable_xformers_memory_efficient_attention()
 
     # prepare images
     face_emb = prepare_average_embeding([
@@ -175,7 +181,7 @@ if __name__ == '__main__':
     ).images[0]
 
     # processed face with padding
-    image.save('face.jpg')
+    image.save('face_0.jpg')
 
     # integrate cropped result into the pose image
     x, y, w, h = position
