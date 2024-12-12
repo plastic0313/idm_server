@@ -42,7 +42,7 @@ def post_json():
     model_image_str = img2b64(model_image)
 
     data = {'person_images': [person_image_str], 'model_image': model_image_str, 'name': 'xyz', 'age':33}
-    response = requests.post('http://43.128.133.3:5000/predict', json=data).json()
+    response = requests.post('http://43.128.133.3:80/predict', json=data).json()
 
     res_image = base64_to_pil_image(response['model_image_res'])
 
