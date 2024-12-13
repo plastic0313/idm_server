@@ -19,6 +19,7 @@ import json
 import base64
 import io
 import datetime
+import time
 
 
 global pipe
@@ -27,12 +28,12 @@ global pipe
 app = Flask(__name__)
 
 # init FaceAnalysis
-app_face = FaceAnalysis(name='antelopev2', root='/home/project/idm_server/models/FaceAnysis', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+app_face = FaceAnalysis(name='antelopev2', root='/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/FaceAnysis', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 app_face.prepare(ctx_id=0, det_size=(640, 640))
  
 # 加载预测模型
 # Path to InstantID models
-checkpoint_dir = '/home/project/idm_server/models/InstantID'
+checkpoint_dir = '/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/InstantID'
 face_adapter = f'{checkpoint_dir}/ip-adapter.bin'
 controlnet_path = f'{checkpoint_dir}/ControlNetModel'
 
@@ -40,10 +41,10 @@ controlnet_path = f'{checkpoint_dir}/ControlNetModel'
 controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float16)
 
 # LCM Lora path ( https://huggingface.co/latent-consistency/lcm-lora-sdxl )
-# lora = f'/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/lcm-lora-sdxl/pytorch_lora_weights.safetensors'
+lora = f'/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/lcm-lora-sdxl/pytorch_lora_weights.safetensors'
 
 # You can use any base XL model (do not use models for inpainting!)
-base_model_path = '/home/project/idm_server/models/RealVisXL_V3.0'
+base_model_path = '/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/RealVisXL_V3.0'
 
 pipe = StableDiffusionXLInstantIDInpaintPipeline.from_pretrained(
     base_model_path,
@@ -164,94 +165,125 @@ def prepareMaskAndPoseAndControlImage(pose_image, face_info, padding = 50, mask_
 # 定义AI服务接口
 @app.route('/predict', methods=['POST'])
 def predict(is_saved=True):
+    res_json = {'status':0, #0 error, 1 success
+                'info':None,
+                'model_image_res': None,
+                'cost_time': None}
 
     # 获取请求数据
     data = request.data
     data = json.loads(data)
-    
-    name = data.get('name', 'no_recv')
-    age = data.get('age', 'no_recv')
-    print("======= recv args: ", name, str(age))
 
-    person_images_b64 = data['person_images']
-    model_image_b64 = request.json['model_image']
+    try:
+        model_pic_id = data.get('model_pic_id', 'no_recv')
+        person_id = data.get('person_id', 'no_recv')
+        print("======= recv args: \n", 'model_pic_id: ' + str(model_pic_id) + '\n', 'person_id: ' + str(person_id))
 
-    now = datetime.datetime.now()
+        person_images_b64 = data['person_images']
+        model_image_b64 = request.json['model_image']
+    except Exception as e:
+        info = "Data transfer failed, please check the input information!"
+        res_json['status'] = 0
+        res_json['info'] = info
+        return jsonify(res_json)
+
+
+    now = datetime.datetime.now()    
     time_str = now.strftime("%Y%m%d_%H%M%S")
 
+    model_image_res = None 
+    
+    try:
+        face_emebdings = []
+        count = 0
+        for image_b64 in person_images_b64:
+            person_image = base64_to_pil_image(image_b64)
 
-    face_emebdings = []
-    count = 0
-    for image_b64 in person_images_b64:
-        person_image = base64_to_pil_image(image_b64)
+            if is_saved:
+                filename = "asset/upload/person_upload_" + f"{str(person_id)}" + "_" + f"{time_str}.png"
+                person_image.save(filename)
+
+            person_image = resize_img(person_image)
+            person_face_info = app_face.get(cv2.cvtColor(np.array(person_image), cv2.COLOR_RGB2BGR))
+            person_face_info = sorted(person_face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*x['bbox'][3]-x['bbox'][1])[-1] # only use the maximum face
+            face_emb = person_face_info['embedding']
+            face_emebdings.append(face_emb)
+            count+=1
+
+        # prepare face_emb
+        face_emb = np.concatenate(face_emebdings)
+
+        # get model_image face_info
+        model_image = base64_to_pil_image(model_image_b64)
+        model_face_info = app_face.get(cv2.cvtColor(np.array(model_image), cv2.COLOR_RGB2BGR))
+        model_face_info = sorted(model_face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*x['bbox'][3]-x['bbox'][1])[-1] # only use the maximum face
+
+        images, position = prepareMaskAndPoseAndControlImage(
+            model_image,
+            model_face_info,
+            60,  # padding
+            40,  # grow mask
+            True # resize
+        )
+        mask, model_image_preprocessed, control_image = images
+
+        prompt = 'a female, look at the camera'
+        # negative_prompt is used only when guidance_scale > 1
+        # https://huggingface.co/docs/diffusers/api/pipelines/controlnet_sdxl
+        negative_prompt = '(lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch,deformed, mutated, cross-eyed, ugly, disfigured'
+        steps = 30
+        mask_strength = 0.7 # values between 0 - 1
+
+        start_time = time.time()
+
+        image = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            image_embeds=face_emb,
+            control_image=control_image,
+            image=model_image_preprocessed,
+            mask_image=mask,
+            controlnet_conditioning_scale=0.8,
+            strength=mask_strength,
+            ip_adapter_scale=0.3, # keep it low
+            num_inference_steps=int(math.ceil(steps / mask_strength)),
+            guidance_scale=7
+        ).images[0]
+
+        torch.cuda.empty_cache()
+
+        # # processed face with padding
+        # image.save('face.jpg')
+
+        # integrate cropped result into the pose image
+        x, y, w, h = position
+
+        image = image.resize((w, h))
+        model_image.paste(image, (x, y))
 
         if is_saved:
-            filename = "asset/upload/person_upload_" + f"{time_str}.png"
-            person_image.save(filename)
+            filename = "asset/results/model_res_" + f"{str(person_id)}" + "_" + f"{time_str}.png"
+            model_image.save(filename)
 
-        person_image = resize_img(person_image)
-        person_face_info = app_face.get(cv2.cvtColor(np.array(person_image), cv2.COLOR_RGB2BGR))
-        person_face_info = sorted(person_face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*x['bbox'][3]-x['bbox'][1])[-1] # only use the maximum face
-        face_emb = person_face_info['embedding']
-        face_emebdings.append(face_emb)
-        count+=1
+        model_image_res = numpy_to_base64(cv2.cvtColor(np.array(model_image), cv2.COLOR_RGB2BGR))
 
-    # prepare face_emb
-    face_emb = np.concatenate(face_emebdings)
+        end_time = time.time()
 
-    # get model_image face_info
-    model_image = base64_to_pil_image(model_image_b64)
-    model_face_info = app_face.get(cv2.cvtColor(np.array(model_image), cv2.COLOR_RGB2BGR))
-    model_face_info = sorted(model_face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*x['bbox'][3]-x['bbox'][1])[-1] # only use the maximum face
+        cost_time = end_time - start_time
 
-    images, position = prepareMaskAndPoseAndControlImage(
-        model_image,
-        model_face_info,
-        60,  # padding
-        40,  # grow mask
-        True # resize
-    )
-    mask, model_image_preprocessed, control_image = images
-
-    prompt = 'a female, look at the camera'
-    # negative_prompt is used only when guidance_scale > 1
-    # https://huggingface.co/docs/diffusers/api/pipelines/controlnet_sdxl
-    negative_prompt = '(lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch, deformed, mutated, cross-eyed, ugly, disfigured (lowres, low quality, worst quality:1.2), (text:1.2), watermark, painting, drawing, illustration, glitch,deformed, mutated, cross-eyed, ugly, disfigured'
-    steps = 30
-    mask_strength = 0.7 # values between 0 - 1
-
-    image = pipe(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        image_embeds=face_emb,
-        control_image=control_image,
-        image=model_image_preprocessed,
-        mask_image=mask,
-        controlnet_conditioning_scale=0.8,
-        strength=mask_strength,
-        ip_adapter_scale=0.3, # keep it low
-        num_inference_steps=int(math.ceil(steps / mask_strength)),
-        guidance_scale=7
-    ).images[0]
-
-
-    torch.cuda.empty_cache()
-
-    # # processed face with padding
-    # image.save('face.jpg')
-
-    # integrate cropped result into the pose image
-    x, y, w, h = position
-
-    image = image.resize((w, h))
-    model_image.paste(image, (x, y))
-
-    if is_saved:
-        filename = "asset/results/model_res_" + f"{time_str}.png"
-        model_image.save(filename)
-
-    model_image_res = numpy_to_base64(cv2.cvtColor(np.array(model_image), cv2.COLOR_RGB2BGR))
-    return jsonify({'model_image_res': model_image_res})
+        info = "Inference success!"
+        res_json['status'] = 1
+        res_json['info'] = info
+        res_json['model_image_res'] = model_image_res
+        res_json['cost_time'] = cost_time
+    
+    except Exception as e:
+        info = "Inference failed, please check the server status!"
+        res_json['status'] = 0
+        res_json['info'] = info
+        return jsonify(res_json)
+    else:
+        return jsonify(res_json)
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=80)
