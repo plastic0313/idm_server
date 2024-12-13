@@ -28,12 +28,12 @@ global pipe
 app = Flask(__name__)
 
 # init FaceAnalysis
-app_face = FaceAnalysis(name='antelopev2', root='/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/FaceAnysis', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+app_face = FaceAnalysis(name='antelopev2', root='/home/project/idm_server/models/FaceAnysis', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 app_face.prepare(ctx_id=0, det_size=(640, 640))
  
 # 加载预测模型
 # Path to InstantID models
-checkpoint_dir = '/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/InstantID'
+checkpoint_dir = '/home/project/idm_server/models/InstantID'
 face_adapter = f'{checkpoint_dir}/ip-adapter.bin'
 controlnet_path = f'{checkpoint_dir}/ControlNetModel'
 
@@ -41,10 +41,10 @@ controlnet_path = f'{checkpoint_dir}/ControlNetModel'
 controlnet = ControlNetModel.from_pretrained(controlnet_path, torch_dtype=torch.float16)
 
 # LCM Lora path ( https://huggingface.co/latent-consistency/lcm-lora-sdxl )
-lora = f'/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/lcm-lora-sdxl/pytorch_lora_weights.safetensors'
+# lora = f''
 
 # You can use any base XL model (do not use models for inpainting!)
-base_model_path = '/mnt/pfs-ssai-cv/DCQ/tmp_20240402/models/RealVisXL_V3.0'
+base_model_path = '/home/project/idm_server/models/RealVisXL_V3.0'
 
 pipe = StableDiffusionXLInstantIDInpaintPipeline.from_pretrained(
     base_model_path,
