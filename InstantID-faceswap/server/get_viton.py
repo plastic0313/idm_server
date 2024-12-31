@@ -40,8 +40,8 @@ def post_json():
     model_image_str = img2b64(model_image)
 
     data = {'person_images': [person_image_str], 'model_image': model_image_str, 'model_pic_id': 0, 'person_id': 0}
-    # response = requests.post('http://43.128.133.3:80/predict', json=data).json()
-    response = requests.post('http://127.0.0.1:80/predict', json=data).json()
+    response = requests.post('http://43.128.133.3:80/predict', json=data).json()
+    # response = requests.post('http://127.0.0.1:80/predict', json=data).json()
 
     if response['status']:
         print(response['info']) 
